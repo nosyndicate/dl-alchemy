@@ -59,17 +59,93 @@ Run from the repo root with module syntax:
 - **A6** needs `A6_REFERENCE_ROOT` set and its Hugging Face download. See
   `experiments/a6_generalization/README.md#use-your-own-gpu`. Call `train(cfg)`
   instead of `launch(cfg)`.
-- **Long jobs:** launch detached with a log file, then watch the log:
+- **Before a full sweep:** estimate its time from the table above. Runs on one
+  card go one after another.
 
-  ```bash
-  CUDA_VISIBLE_DEVICES=GPU-4a324f9d-4c66-e4ee-0116-cbe23c49ddcd PYTHONUNBUFFERED=1 \
-    nohup uv run python -m experiments.a1_basics.p1_hyperparameters > logs/p1.log 2>&1 &
-  ```
-  `logs/` is not git-ignored. Either put logs outside the repo, or check that
-  `git status` stays clean.
-- **Before a full sweep:** do a short trial with `num_train_sequences=10_000`
-  (about 1 minute). Estimate the full sweep's time from the table above. Runs on
-  one card go one after another.
+### Launcher template
+
+```python
+# experiments/a1_basics/p1_hyperparameters.py
+from train import TrainConfig, train, training_run_name
+
+EXPERIMENT_KEY = "a1-p1-lr-v1"   # new key whenever the experiment changes
+GPU_TAG = "gpu-a6000"            # or "gpu-blackwell"; must match the launch card
+
+RUNS = [
+    TrainConfig(
+        learning_rate=lr,        # override only the field being studied
+        run_name_suffix=EXPERIMENT_KEY,
+        wandb_tags=(EXPERIMENT_KEY, GPU_TAG),
+    )
+    for lr in (1e-3, 3e-3, 1e-2)
+]
+
+
+def check_names():
+    names = [training_run_name(cfg) for cfg in RUNS]
+    print("\n".join(names))
+    assert len(set(names)) == len(names), "duplicate run names would share a checkpoint"
+
+
+def main():
+    check_names()
+    for cfg in RUNS:
+        train(cfg)
+
+
+if __name__ == "__main__":
+    main()
+```
+
+These configs produce `model-d8-lr0.001-tok614M-a1-p1-lr-v1`,
+`model-d8-lr0.003-tok614M-a1-p1-lr-v1` and `model-d8-lr0.01-tok614M-a1-p1-lr-v1`.
+
+### Example A: LR sweep on the A6000
+
+This is the template above: 3 runs at about 57 min each, so about 3 hours.
+
+```bash
+cd ~/src/deep-learning-alchemy
+CUDA_VISIBLE_DEVICES=GPU-4a324f9d-4c66-e4ee-0116-cbe23c49ddcd PYTHONUNBUFFERED=1 \
+  nohup uv run python -m experiments.a1_basics.p1_hyperparameters > ~/p1-lr.log 2>&1 &
+```
+
+### Example B: schedule comparison on Blackwell, in parallel with A
+
+This goes in a separate launcher, e.g. `experiments/a1_basics/p1_schedules.py`,
+with the same structure. Change these lines:
+
+```python
+EXPERIMENT_KEY = "a1-p1-sched-v1"
+GPU_TAG = "gpu-blackwell"
+RUNS = [
+    TrainConfig(lr_schedule=s, run_name_suffix=EXPERIMENT_KEY,
+                wandb_tags=(EXPERIMENT_KEY, GPU_TAG))
+    for s in ("linear", "cos", "constant")   # also "invsqrt" (lr_schedules.py)
+]
+```
+
+```bash
+CUDA_VISIBLE_DEVICES=GPU-97ba0507-db5e-63e5-3aea-275a11dfe940 \
+UV_PROJECT_ENVIRONMENT=$PWD/.venv-blackwell PYTHONUNBUFFERED=1 \
+  nohup uv run --no-sync python -m experiments.a1_basics.p1_schedules > ~/p1-sched.log 2>&1 &
+```
+
+In an interactive terminal, `bw python -m experiments.a1_basics.p1_schedules`
+does the same. With `nohup`, use the full form above, because `nohup` cannot see
+shell functions.
+
+### Variations
+
+- **Quick trial:** add `num_train_sequences=10_000` to each config. Each run
+  takes about a minute, and the trial gets its own name (`...-tok10.2M-...`), so
+  it never reuses a full run's checkpoint.
+- **Paired sweep:** nest the loops, e.g.
+  `for lr in (...) for bs in (32, 64, 128)` with `batch_size=bs`.
+- **Progress:** `tail ~/p1-lr.log` shows step, loss and ETA. `nvidia-smi` shows
+  which card is busy.
+- **Plots:** copy `experiments/lr_tuning/plot_lr_tuning.py` and point it at your
+  `EXPERIMENT_KEY` tag. It loads runs from W&B.
 
 ## Experiment hygiene
 
@@ -83,9 +159,11 @@ Run from the repo root with module syntax:
 - **Run names:** they are derived from the config, e.g.
   `model-d8-lr0.003-tok614M-<suffix>`. Checkpoints live in
   `~/dl_alchemy/ckpts/<run name>`, and an existing run is resumed or reused, not
-  retrained. Configs in a sweep must differ in a field that changes the name, or
-  in `run_name_suffix`. Two parallel jobs must never share a run name. Use
-  `force_run=True` only to retrain on purpose.
+  retrained. Most non-default fields already appear in the name: `-bs`, `-wd`,
+  `-cos`, the optimizer, the seeds, and so on (`training_run_name` in `train.py`).
+  Not every field does, so run the template's `check_names()` rather than
+  guessing. Two parallel jobs must never share a run name. Use `force_run=True`
+  only to retrain on purpose.
 - **Keep the default recipe from `TrainConfig`** (`train.py`) and override only
   the field being studied.
 - **The baseline already exists:** default d8, lr 3e-3, final val loss 2.928, at
