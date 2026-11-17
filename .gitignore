@@ -15,3 +15,4 @@ slurmjobs/
 .wandb.secret.env
 .venv/
 wandb/
+.venv-blackwell/
