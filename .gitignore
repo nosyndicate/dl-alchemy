@@ -16,3 +16,6 @@ slurmjobs/
 .venv/
 wandb/
 .venv-blackwell/
+
+.DS_Store
+._.DS_Store
